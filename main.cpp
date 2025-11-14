@@ -6,6 +6,8 @@
 #include <limits>    // numeric_limits
 #include <cstdio>    // sprintf
 #include <cctype>    // toupper
+#include <algorithm> // for sorting
+#include <cmath>     // for abs, fmod math functions
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -28,6 +30,51 @@ struct Color {
     string hex;  // e.g., #FFAABB
     int r, g, b;
     float brightness() const { return (r + g + b) / 3.0f; }
+    
+    // Convert RGB to HSL for hue calculation
+    void getHSL(float &h, float &s, float &l) const {
+        float r_ = r / 255.0f;
+        float g_ = g / 255.0f;
+        float b_ = b / 255.0f;
+        
+        float maxVal = max(r_, max(g_, b_));
+        float minVal = min(r_, min(g_, b_));
+        float delta = maxVal - minVal;
+        
+        // Calculate lightness
+        l = (maxVal + minVal) / 2.0f;
+        
+        // Calculate saturation
+        if (delta == 0) {
+            s = 0;
+            h = 0;
+        } else {
+            s = delta / (1 - std::abs(2 * l - 1));
+            
+            // Calculate hue
+            if (maxVal == r_) {
+                h = 60 * std::fmod(((g_ - b_) / delta), 6);
+            } else if (maxVal == g_) {
+                h = 60 * (((b_ - r_) / delta) + 2);
+            } else {
+                h = 60 * (((r_ - g_) / delta) + 4);
+            }
+            
+            if (h < 0) h += 360;
+        }
+    }
+    
+    float getHue() const {
+        float h, s, l;
+        getHSL(h, s, l);
+        return h;
+    }
+    
+    float getSaturation() const {
+        float h, s, l;
+        getHSL(h, s, l);
+        return s;
+    }
 };
 
 struct Action { // for undo/redo in Edit
@@ -116,6 +163,47 @@ struct Palette {
         cout << "Replaced " << old.hex << " with " << newc.hex << "\n";
         return true;
     }
+    
+    // Sort functions
+    void sortByBrightness() {
+        for (int i = 0; i < count-1; ++i) {
+            for (int j = 0; j < count-i-1; ++j) {
+                if (colors[j].brightness() > colors[j+1].brightness()) {
+                    Color temp = colors[j];
+                    colors[j] = colors[j+1];
+                    colors[j+1] = temp;
+                }
+            }
+        }
+        cout << "Palette sorted by brightness (light to dark).\n";
+    }
+    
+    void sortByHue() {
+        for (int i = 0; i < count-1; ++i) {
+            for (int j = 0; j < count-i-1; ++j) {
+                if (colors[j].getHue() > colors[j+1].getHue()) {
+                    Color temp = colors[j];
+                    colors[j] = colors[j+1];
+                    colors[j+1] = temp;
+                }
+            }
+        }
+        cout << "Palette sorted by hue (color wheel order).\n";
+    }
+    
+    void sortBySaturation() {
+        for (int i = 0; i < count-1; ++i) {
+            for (int j = 0; j < count-i-1; ++j) {
+                if (colors[j].getSaturation() > colors[j+1].getSaturation()) {
+                    Color temp = colors[j];
+                    colors[j] = colors[j+1];
+                    colors[j+1] = temp;
+                }
+            }
+        }
+        cout << "Palette sorted by saturation (muted to vibrant).\n";
+    }
+    
     void undo() {
         if (undoStack.isEmpty()) { cout << "Nothing to undo.\n"; return; }
         Action a = undoStack.pop();
@@ -280,6 +368,7 @@ void initPresets() {
 // ---------------- Explore Logic ----------------
 int shuffledIndices[TOTAL_PRESETS];
 int shufflePos = 0;
+int currentDisplayStart = 0; // Track current display position
 
 void shufflePresetsOnce() {
     for (int i = 0; i < TOTAL_PRESETS; ++i) shuffledIndices[i] = i;
@@ -290,26 +379,28 @@ void shufflePresetsOnce() {
         shuffledIndices[j] = tmp;
     }
     shufflePos = 0;
+    currentDisplayStart = 0;
 }
 
-void showFivePresets() {
-    if (shufflePos >= TOTAL_PRESETS) {
-        cout << "\nAll presets shown -- reshuffling...\n";
-        shufflePresetsOnce();
-    }
+void showPresets(int start, int count) {
     cout << "\n--- EXPLORE: Color Palettes ---\n";
-    int showCount = 0;
-    while (showCount < 5 && shufflePos < TOTAL_PRESETS) {
-        int idx = shuffledIndices[shufflePos++];
-        cout << (showCount+1) << ". " << presets[idx].title << "\n   ";
+    for (int i = 0; i < count && (start + i) < TOTAL_PRESETS; ++i) {
+        int idx = shuffledIndices[start + i];
+        cout << (i+1) << ". " << presets[idx].title << "\n   ";
         for (int k = 0; k < COLORS_PER_PRESET; ++k) {
             cout << presets[idx].cols[k].hex;
             if (k < COLORS_PER_PRESET-1) cout << "   ";
         }
         cout << "\n";
-        ++showCount;
     }
-    cout << "\n[M] More Palettes   [C] Copy Palette   [B] Back to Main Menu\n";
+    
+    bool hasMore = (start + count) < TOTAL_PRESETS;
+    bool hasPrevious = start > 0;
+    
+    cout << "\n";
+    if (hasPrevious) cout << "[P] Previous  ";
+    if (hasMore) cout << "[M] More  ";
+    cout << "[C] Copy Palette  [B] Back to Main Menu\n";
 }
 
 // ---------------- ID generator for user palettes ----------------
@@ -331,11 +422,19 @@ int findPaletteIndexByIdOrName(const string &key) {
     return -1;
 }
 
+bool isPaletteNameExists(const string &name) {
+    for (int i = 0; i < paletteCount; ++i) {
+        if (allPalettes[i].name == name) return true;
+    }
+    return false;
+}
+
 // ---------------- Main Program ----------------
 int main() {
     srand((unsigned)time(0));
     initPresets();
     shufflePresetsOnce();
+
     RecentQueue recent;
 
     int mainChoice;
@@ -356,22 +455,41 @@ int main() {
 
         if (mainChoice == 1) { // Explore
             bool inExplore = true;
+            currentDisplayStart = 0;
+            int displayCount = 5; // Start with 5 palettes
+            
             while (inExplore) {
                 clearScreen();
-                showFivePresets();
-                cout << "Enter your choice (M/C/B): ";
+                showPresets(currentDisplayStart, displayCount);
+                cout << "Enter your choice: ";
                 string line; getline(cin, line);
                 if (line.size() == 0) { cout << "No option given.\n"; waitEnter(); continue; }
                 char opt = toupper(line[0]);
+                
                 if (opt == 'M') {
-                    continue;
+                    // Show 2-3 more palettes
+                    int newPalettes = 2 + rand() % 2; // 2 or 3
+                    if (currentDisplayStart + displayCount + newPalettes <= TOTAL_PRESETS) {
+                        displayCount += newPalettes;
+                    } else {
+                        displayCount = TOTAL_PRESETS - currentDisplayStart;
+                        cout << "No more palettes available.\n";
+                        waitEnter();
+                    }
+                } else if (opt == 'P') {
+                    // Go back to previous
+                    if (currentDisplayStart >= 5) {
+                        currentDisplayStart -= 5;
+                        displayCount = 5;
+                    } else {
+                        currentDisplayStart = 0;
+                        displayCount = 5;
+                    }
                 } else if (opt == 'C') {
-                    cout << "Enter number (1-5) of shown palette to copy or 0 to cancel: ";
+                    cout << "Enter number (1-" << displayCount << ") of shown palette to copy or 0 to cancel: ";
                     int num; cin >> num; cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                    if (num >= 1 && num <= 5) {
-                        int startPos = shufflePos - 5;
-                        if (startPos < 0) startPos = 0;
-                        int chosenPreset = shuffledIndices[startPos + (num - 1)];
+                    if (num >= 1 && num <= displayCount) {
+                        int chosenPreset = shuffledIndices[currentDisplayStart + (num - 1)];
                         
                         cout << "You chose: " << presets[chosenPreset].title << "\n";
                         cout << "Palette colors:\n";
@@ -406,6 +524,13 @@ int main() {
                             string pname;
                             cout << "Enter new palette name: "; getline(cin, pname);
                             if (pname.empty()) pname = "Untitled";
+                            
+                            // Check for duplicate name
+                            if (isPaletteNameExists(pname)) {
+                                cout << "Palette name already exists! Please choose a different name.\n";
+                                continue;
+                            }
+                            
                             p.setName(pname);
                             p.setId(generatePaletteId());
                             for (int k = 0; k < choicesCount; ++k) {
@@ -424,19 +549,32 @@ int main() {
                             cout << "Colors added to " << allPalettes[idx].id << ".\n";
                         } else cout << "Invalid option.\n";
                     } else cout << "Invalid number.\n";
+                    waitEnter();
                 } else if (opt == 'B') {
                     inExplore = false;
                 } else {
                     cout << "Unknown option.\n";
+                    waitEnter();
                 }
-                waitEnter();
             }
 
         } else if (mainChoice == 2) { // Create New Palette
             if (paletteCount >= 200) { cout << "Max palettes reached.\n"; waitEnter(); continue; }
             Palette p;
-            string pname; cout << "Enter palette name: "; getline(cin, pname);
-            if (pname.empty()) pname = "Untitled";
+            string pname; 
+            bool validName = false;
+            
+            while (!validName) {
+                cout << "Enter palette name: "; getline(cin, pname);
+                if (pname.empty()) pname = "Untitled";
+                
+                if (isPaletteNameExists(pname)) {
+                    cout << "Palette name already exists! Please choose a different name.\n";
+                } else {
+                    validName = true;
+                }
+            }
+            
             p.setName(pname);
             p.setId(generatePaletteId());
             bool inCreate = true;
@@ -445,7 +583,8 @@ int main() {
                 cout << "\n--- Create: " << p.name << " (" << p.id << ") ---\n";
                 cout << "1. Add Color (Random / By Name)\n";
                 cout << "2. View Colors\n";
-                cout << "3. Save Palette\n";
+                cout << "3. Sort Colors\n";
+                cout << "4. Save Palette\n";
                 cout << "0. Cancel and Back\n";
                 cout << "Choose: ";
                 int c; cin >> c; cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
@@ -515,6 +654,18 @@ int main() {
                     p.display();
                     waitEnter();
                 } else if (c == 3) {
+                    if (p.count > 0) {
+                        cout << "Sort by:\n1. Brightness\n2. Hue\n3. Saturation\nChoose: ";
+                        int sortChoice; cin >> sortChoice; cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                        if (sortChoice == 1) p.sortByBrightness();
+                        else if (sortChoice == 2) p.sortByHue();
+                        else if (sortChoice == 3) p.sortBySaturation();
+                        else cout << "Invalid choice.\n";
+                    } else {
+                        cout << "No colors to sort.\n";
+                    }
+                    waitEnter();
+                } else if (c == 4) {
                     allPalettes[paletteCount++] = p;
                     recent.enqueue(p.id, p.name);
                     cout << "Palette saved as " << p.id << ".\n";
@@ -543,6 +694,7 @@ int main() {
                 cout << "3. Replace Color (by index)\n";
                 cout << "4. Delete Color (by index)\n";
                 cout << "5. View Colors\n";
+                cout << "6. Sort Colors\n";
                 cout << "0. Back\n";
                 cout << "Choose: ";
                 int ec; cin >> ec; cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
@@ -572,6 +724,18 @@ int main() {
                     waitEnter();
                 } else if (ec == 5) {
                     p.display(); waitEnter();
+                } else if (ec == 6) {
+                    if (p.count > 0) {
+                        cout << "Sort by:\n1. Brightness\n2. Hue\n3. Saturation\nChoose: ";
+                        int sortChoice; cin >> sortChoice; cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                        if (sortChoice == 1) p.sortByBrightness();
+                        else if (sortChoice == 2) p.sortByHue();
+                        else if (sortChoice == 3) p.sortBySaturation();
+                        else cout << "Invalid choice.\n";
+                    } else {
+                        cout << "No colors to sort.\n";
+                    }
+                    waitEnter();
                 } else if (ec == 0) inEdit = false;
                 else cout << "Invalid.\n";
             }
