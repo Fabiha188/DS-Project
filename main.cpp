@@ -77,24 +77,55 @@ struct Color {
     }
 };
 
-struct Action { // for undo/redo in Edit
-    // type: 1 = add, 2 = remove, 3 = replace(old->new)
-    int type;
-    Color before; // used for remove/replace (store old)
-    Color after;  // used for add/replace (store new)
+// Simple Action structure for undo/redo
+struct Action {
+    int type; // 1=add, 2=remove, 3=replace
+    int index; // position in palette
+    Color color; // color involved
+    Color oldColor; // for replace operations
 };
 
-// Simple Action Stack (fixed capacity)
-class ActionStack {
-    Action arr[500];
-    int top;
+// Simple undo/redo system using arrays
+class SimpleUndoRedo {
+    Action undoStack[100]; // stack for undo
+    Action redoStack[100]; // stack for redo
+    int undoTop, redoTop;
+    
 public:
-    ActionStack(): top(-1) {}
-    bool isEmpty() const { return top == -1; }
-    bool isFull() const { return top == 499; }
-    void push(const Action &a) { if (!isFull()) arr[++top] = a; }
-    Action pop() { if (!isEmpty()) return arr[top--]; Action e; e.type = 0; return e; }
-    void clear() { top = -1; }
+    SimpleUndoRedo() : undoTop(-1), redoTop(-1) {}
+    
+    void pushUndo(const Action &action) {
+        if (undoTop < 99) {
+            undoStack[++undoTop] = action;
+        }
+    }
+    
+    Action popUndo() {
+        if (undoTop >= 0) {
+            return undoStack[undoTop--];
+        }
+        return Action(); // empty action
+    }
+    
+    void pushRedo(const Action &action) {
+        if (redoTop < 99) {
+            redoStack[++redoTop] = action;
+        }
+    }
+    
+    Action popRedo() {
+        if (redoTop >= 0) {
+            return redoStack[redoTop--];
+        }
+        return Action(); // empty action
+    }
+    
+    void clearRedo() {
+        redoTop = -1;
+    }
+    
+    bool canUndo() const { return undoTop >= 0; }
+    bool canRedo() const { return redoTop >= 0; }
 };
 
 // Recent palettes queue (store ID + name)
@@ -132,39 +163,157 @@ struct Palette {
     string name;
     Color colors[500]; // allow many colors
     int count;
-    ActionStack undoStack;
-    ActionStack redoStack;
+    SimpleUndoRedo history;
+    
     Palette(): id(""), name(""), count(0) {}
     void setId(const string &i) { id = i; }
     void setName(const string &n) { name = n; }
+    
     bool addColor(const Color &c) {
-        if (count >= 500) { cout << "Palette reached internal limit (500).\n"; return false; }
-        colors[count++] = c;
-        // push add action
-        Action a; a.type = 1; a.after = c; undoStack.push(a); redoStack.clear();
+        if (count >= 500) { 
+            cout << "Palette reached internal limit (500).\n"; 
+            return false; 
+        }
+        colors[count] = c;
+        
+        // Record undo action
+        Action action;
+        action.type = 1; // add
+        action.index = count;
+        action.color = c;
+        history.pushUndo(action);
+        history.clearRedo();
+        
+        count++;
         return true;
     }
+    
     bool removeAtIndex(int idx) { // idx: 0-based
-        if (idx < 0 || idx >= count) { cout << "Invalid index.\n"; return false; }
+        if (idx < 0 || idx >= count) { 
+            cout << "Invalid index.\n"; 
+            return false; 
+        }
         Color old = colors[idx];
+        
+        // Record undo action
+        Action action;
+        action.type = 2; // remove
+        action.index = idx;
+        action.color = old;
+        history.pushUndo(action);
+        history.clearRedo();
+        
         // shift left
-        for (int i = idx; i < count-1; ++i) colors[i] = colors[i+1];
+        for (int i = idx; i < count-1; ++i) {
+            colors[i] = colors[i+1];
+        }
         --count;
-        Action a; a.type = 2; a.before = old; undoStack.push(a); redoStack.clear();
+        
         cout << "Removed color " << old.hex << " (" << old.name << ")\n";
         return true;
     }
+    
     bool replaceAtIndex(int idx, const Color &newc) {
-        if (idx < 0 || idx >= count) { cout << "Invalid index.\n"; return false; }
+        if (idx < 0 || idx >= count) { 
+            cout << "Invalid index.\n"; 
+            return false; 
+        }
         Color old = colors[idx];
+        
+        // Record undo action
+        Action action;
+        action.type = 3; // replace
+        action.index = idx;
+        action.color = newc;
+        action.oldColor = old;
+        history.pushUndo(action);
+        history.clearRedo();
+        
         colors[idx] = newc;
-        Action a; a.type = 3; a.before = old; a.after = newc;
-        undoStack.push(a); redoStack.clear();
         cout << "Replaced " << old.hex << " with " << newc.hex << "\n";
         return true;
     }
     
-    // Sort functions
+    void undo() {
+        if (!history.canUndo()) {
+            cout << "Nothing to undo.\n";
+            return;
+        }
+        
+        Action action = history.popUndo();
+        
+        switch (action.type) {
+            case 1: // undo add (remove the color)
+                if (action.index >= 0 && action.index < count) {
+                    // Remove from the end (simplified)
+                    if (action.index == count - 1) {
+                        count--;
+                        cout << "Undo: removed " << action.color.hex << "\n";
+                    }
+                }
+                break;
+                
+            case 2: // undo remove (add back the color)
+                if (count < 500) {
+                    colors[count] = action.color;
+                    count++;
+                    cout << "Undo: restored " << action.color.hex << "\n";
+                }
+                break;
+                
+            case 3: // undo replace (restore old color)
+                if (action.index >= 0 && action.index < count) {
+                    colors[action.index] = action.oldColor;
+                    cout << "Undo: restored " << action.oldColor.hex << "\n";
+                }
+                break;
+        }
+        
+        // Push to redo stack
+        history.pushRedo(action);
+    }
+    
+    void redo() {
+        if (!history.canRedo()) {
+            cout << "Nothing to redo.\n";
+            return;
+        }
+        
+        Action action = history.popRedo();
+        
+        switch (action.type) {
+            case 1: // redo add
+                if (count < 500) {
+                    colors[count] = action.color;
+                    count++;
+                    cout << "Redo: added " << action.color.hex << "\n";
+                }
+                break;
+                
+            case 2: // redo remove
+                if (action.index >= 0 && action.index < count) {
+                    Color removed = colors[action.index];
+                    for (int i = action.index; i < count-1; ++i) {
+                        colors[i] = colors[i+1];
+                    }
+                    count--;
+                    cout << "Redo: removed " << removed.hex << "\n";
+                }
+                break;
+                
+            case 3: // redo replace
+                if (action.index >= 0 && action.index < count) {
+                    colors[action.index] = action.color;
+                    cout << "Redo: replaced with " << action.color.hex << "\n";
+                }
+                break;
+        }
+        
+        // Push back to undo stack
+        history.pushUndo(action);
+    }
+    
+    // Sort functions (unchanged)
     void sortByBrightness() {
         for (int i = 0; i < count-1; ++i) {
             for (int j = 0; j < count-i-1; ++j) {
@@ -204,84 +353,6 @@ struct Palette {
         cout << "Palette sorted by saturation (muted to vibrant).\n";
     }
     
-    void undo() {
-        if (undoStack.isEmpty()) { cout << "Nothing to undo.\n"; return; }
-        Action a = undoStack.pop();
-        if (a.type == 1) {
-            // undo add -> remove last matching color (use after)
-            bool found = false;
-            for (int i = count-1; i >= 0; --i) {
-                if (colors[i].hex == a.after.hex && colors[i].r==a.after.r) {
-                    // remove this index
-                    Color removed = colors[i];
-                    for (int j = i; j < count-1; ++j) colors[j] = colors[j+1];
-                    --count;
-                    Action ra; ra.type = 1; ra.after = removed; // redo will re-add
-                    redoStack.push(ra);
-                    cout << "Undo: removed " << removed.hex << "\n";
-                    found = true; break;
-                }
-            }
-            if (!found) cout << "Undo: matching add not found.\n";
-        } else if (a.type == 2) {
-            // undo remove -> re-insert at end
-            if (count < 500) {
-                colors[count++] = a.before;
-                Action ra; ra.type = 2; ra.before = a.before; redoStack.push(ra);
-                cout << "Undo: restored " << a.before.hex << "\n";
-            } else cout << "Undo error: palette full.\n";
-        } else if (a.type == 3) {
-            // undo replace -> find the color equal to after and change back to before (first match)
-            bool found = false;
-            for (int i = 0; i < count; ++i) {
-                if (colors[i].hex == a.after.hex && colors[i].r==a.after.r) {
-                    colors[i] = a.before;
-                    Action ra; ra.type = 3; ra.before = a.before; ra.after = a.after; redoStack.push(ra);
-                    cout << "Undo: restored " << a.before.hex << "\n";
-                    found = true; break;
-                }
-            }
-            if (!found) cout << "Undo: replace target not found.\n";
-        }
-    }
-    void redo() {
-        if (redoStack.isEmpty()) { cout << "Nothing to redo.\n"; return; }
-        Action a = redoStack.pop();
-        if (a.type == 1) {
-            // redo add -> add color
-            if (count < 500) {
-                colors[count++] = a.after;
-                undoStack.push(a);
-                cout << "Redo: added " << a.after.hex << "\n";
-            } else cout << "Redo error: palette full.\n";
-        } else if (a.type == 2) {
-            // redo remove -> remove last matching
-            bool found = false;
-            for (int i = count-1; i >= 0; --i) {
-                if (colors[i].hex == a.before.hex && colors[i].r==a.before.r) {
-                    Color rem = colors[i];
-                    for (int j = i; j < count-1; ++j) colors[j] = colors[j+1];
-                    --count;
-                    undoStack.push(a);
-                    cout << "Redo: removed " << rem.hex << "\n";
-                    found = true; break;
-                }
-            }
-            if (!found) cout << "Redo: matching color not found.\n";
-        } else if (a.type == 3) {
-            // redo replace -> find before and replace to after
-            bool found = false;
-            for (int i = 0; i < count; ++i) {
-                if (colors[i].hex == a.before.hex && colors[i].r==a.before.r) {
-                    colors[i] = a.after;
-                    undoStack.push(a);
-                    cout << "Redo: replaced with " << a.after.hex << "\n";
-                    found = true; break;
-                }
-            }
-            if (!found) cout << "Redo: replace target not found.\n";
-        }
-    }
     void display() const {
         cout << "\n--- Palette " << id << " : " << name << " (" << count << " colors) ---\n";
         for (int i = 0; i < count; ++i) {
@@ -298,9 +369,17 @@ string rgbToHex(int r, int g, int b) {
     sprintf(buf, "#%02X%02X%02X", r, g, b);
     return string(buf);
 }
+
 Color makeColorFromRGB(const string &name, int r, int g, int b) {
-    Color c; c.name = name; c.r = r; c.g = g; c.b = b; c.hex = rgbToHex(r,g,b); return c;
+    Color c; 
+    c.name = name; 
+    c.r = r; 
+    c.g = g; 
+    c.b = b; 
+    c.hex = rgbToHex(r,g,b); 
+    return c;
 }
+
 void waitEnter() {
     cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     cout << "Press Enter to continue...";
